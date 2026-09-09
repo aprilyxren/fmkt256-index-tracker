@@ -8,10 +8,10 @@ on:
   workflow_dispatch: {}   # lets you trigger it manually from the Actions tab too
 
 permissions:
-  contents: write   # needed so the workflow can commit the updated xlsx back
+  contents: write   # needed so the workflow can commit the updated CSV back
 
 jobs:
-  fill-journal:
+  log-market-data:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repo
@@ -23,18 +23,18 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 lxml openpyxl
+        run: pip install requests
 
-      - name: Run the journal script
+      - name: Run the market log script
         run: |
-          python fill_journal.py \
-            --excel Journal_template_2026.xlsx \
+          python market_log.py \
+            --csv market_log.csv \
             --newsapi-key ${{ secrets.NEWSAPI_KEY }}
 
       - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Journal_template_2026.xlsx
-          git diff --staged --quiet || git commit -m "Update market journal for $(date +'%Y-%m-%d')"
+          git add market_log.csv
+          git diff --staged --quiet || git commit -m "Log market data for $(date +'%Y-%m-%d')"
           git push
