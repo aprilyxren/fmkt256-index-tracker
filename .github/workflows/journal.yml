@@ -1,0 +1,40 @@
+name: Daily Market Journal
+
+on:
+  schedule:
+    # 4:30pm ET, Mon-Fri, while EDT is in effect (UTC-4).
+    # After DST ends (~Nov 1), change 20 -> 21 to stay at 4:30pm ET (EST, UTC-5).
+    - cron: '30 20 * * 1-5'
+  workflow_dispatch: {}   # lets you trigger it manually from the Actions tab too
+
+permissions:
+  contents: write   # needed so the workflow can commit the updated xlsx back
+
+jobs:
+  fill-journal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 lxml openpyxl
+
+      - name: Run the journal script
+        run: |
+          python fill_journal.py \
+            --excel Journal_template_2026.xlsx \
+            --newsapi-key ${{ secrets.NEWSAPI_KEY }}
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Journal_template_2026.xlsx
+          git diff --staged --quiet || git commit -m "Update market journal for $(date +'%Y-%m-%d')"
+          git push
