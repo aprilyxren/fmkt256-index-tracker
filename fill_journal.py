@@ -24,8 +24,9 @@ Usage:
 """
 
 import argparse
+import re
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -155,17 +156,52 @@ def get_news_item(api_key: str, day: date) -> str:
 # ---------------------------------------------------------------------------
 # Excel: find today's row and fill it in, without touching column A formulas
 # ---------------------------------------------------------------------------
+#
+# IMPORTANT: openpyxl has no formula engine. If you load a workbook, don't
+# touch a formula cell, and save it again, openpyxl writes the formula text
+# back out but drops Excel's cached calculated result for it (there's
+# nothing for openpyxl to cache — it never computed one). That means once
+# this script saves the file even once, `data_only=True` reads of the
+# template's `=A5+1`-style date formulas come back as None from then on.
+#
+# So instead of relying on Excel's cached values, we resolve these very
+# simple `=A<row>+<offset>` date formulas ourselves, recursively, with
+# memoization. This works regardless of whether the cache has ever been
+# stripped, and never requires a separate data_only load.
 
-def find_row_for_date(excel_path: Path, target_day: date) -> int:
-    """
-    Open the workbook with cached formula VALUES (data_only=True) just to
-    locate which row's DATE cell equals target_day. Returns the row number.
-    """
-    wb = load_workbook(excel_path, data_only=True)
-    ws = wb[SHEET_NAME]
+_DATE_FORMULA_RE = re.compile(r"^=A(\d+)\+(\d+)$")
+
+
+def resolve_date_for_row(ws, row: int, cache: dict) -> date:
+    """Resolve the DATE column's value for `row`, whether it's a literal
+    datetime or an `=A<row>+<offset>` formula, recursing as needed."""
+    if row in cache:
+        return cache[row]
+
+    val = ws.cell(row=row, column=COL_DATE).value
+
+    if isinstance(val, datetime):
+        result = val.date()
+    elif isinstance(val, str) and val.strip().startswith("="):
+        m = _DATE_FORMULA_RE.match(val.strip().replace(" ", ""))
+        if not m:
+            raise ValueError(f"Unrecognized date formula in row {row}: {val!r}")
+        ref_row, offset = int(m.group(1)), int(m.group(2))
+        result = resolve_date_for_row(ws, ref_row, cache) + timedelta(days=offset)
+    else:
+        raise ValueError(f"Unexpected value in DATE column, row {row}: {val!r}")
+
+    cache[row] = result
+    return result
+
+
+def find_row_for_date(ws, target_day: date) -> int:
+    """Scan the DATE column (resolving formulas as needed) for target_day."""
+    cache: dict = {}
     for row in range(2, ws.max_row + 1):
-        cell_val = ws.cell(row=row, column=COL_DATE).value
-        if isinstance(cell_val, datetime) and cell_val.date() == target_day:
+        if ws.cell(row=row, column=COL_DATE).value is None:
+            continue
+        if resolve_date_for_row(ws, row, cache) == target_day:
             return row
     raise ValueError(
         f"No row found for {target_day.isoformat()} in '{SHEET_NAME}'. "
@@ -173,11 +209,8 @@ def find_row_for_date(excel_path: Path, target_day: date) -> int:
     )
 
 
-def fill_row(excel_path: Path, row: int, values: dict, news_item: str, dry_run: bool = False) -> None:
-    """Write DOW/S&P/US10YR/WTI + news into `row`, editing the ORIGINAL
-    (formula-preserving) workbook so column A's date formulas stay intact."""
-    wb = load_workbook(excel_path)  # NOT data_only — keeps formulas everywhere else
-    ws = wb[SHEET_NAME]
+def fill_row(ws, row: int, values: dict, news_item: str) -> None:
+    """Write DOW/S&P/US10YR/WTI + news into `row` on the given worksheet."""
 
     existing = [ws.cell(row=row, column=c).value for c in (COL_DOW, COL_SPX, COL_TNX, COL_WTI)]
     if any(v is not None for v in existing):
@@ -192,12 +225,6 @@ def fill_row(excel_path: Path, row: int, values: dict, news_item: str, dry_run: 
     if values["WTI Crude Oil"] is not None:
         ws.cell(row=row, column=COL_WTI).value = values["WTI Crude Oil"]
     ws.cell(row=row, column=COL_NEWS).value = news_item
-
-    if dry_run:
-        print(f"[dry-run] Would write to row {row}: {values}, news={news_item!r}")
-        return
-
-    wb.save(excel_path)
 
 
 # ---------------------------------------------------------------------------
@@ -219,8 +246,11 @@ def main():
         print(f"{target_day.isoformat()} is a weekend — markets are closed, nothing to do.")
         return
 
+    wb = load_workbook(excel_path)
+    ws = wb[SHEET_NAME]
+
     print(f"Locating row for {target_day.isoformat()} in {excel_path.name}...")
-    row = find_row_for_date(excel_path, target_day)
+    row = find_row_for_date(ws, target_day)
 
     print("Fetching prices from Stooq...")
     values = scrape_all_series(target_day)
@@ -229,7 +259,12 @@ def main():
     news_item = get_news_item(args.newsapi_key, target_day)
 
     print(f"Writing row {row}...")
-    fill_row(excel_path, row, values, news_item, dry_run=args.dry_run)
+    fill_row(ws, row, values, news_item)
+
+    if args.dry_run:
+        print(f"[dry-run] Not saving. Would have written: {values}, news={news_item!r}")
+    else:
+        wb.save(excel_path)
 
     print("Done:")
     for k, v in values.items():
