@@ -82,6 +82,16 @@ def fetch_stooq_close(name: str, symbol: str, target_day: date):
     last_row = lines[-1].split(",")
     row = dict(zip(header, last_row))
 
+    if "Date" not in row:
+        # Stooq didn't give us the CSV shape we expected -- could be a rate
+        # limit message, a block page, or a changed format. Print a chunk
+        # of the actual raw response so the next run's log tells us exactly
+        # what came back, instead of just "'Date'" with no context.
+        raise RuntimeError(
+            f"Response for '{name}' ({symbol}) didn't look like the expected "
+            f"CSV (no 'Date' column). Raw response started with: {text[:300]!r}"
+        )
+
     row_date = datetime.strptime(row["Date"], "%Y-%m-%d").date()
     close = float(row["Close"])
 
