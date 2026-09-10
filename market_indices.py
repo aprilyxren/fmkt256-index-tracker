@@ -12,7 +12,7 @@ to a CSV file:
 
 Designed to be run once a day, shortly after US market close (~5pm ET,
 after settlement data has posted). Meant to be run via cron / Task
-Scheduler (see bottom of file for a suggested crontab line).
+Scheduler / GitHub Actions.
 
 Data source strategy ("beware it's hard to grab information"):
     1. Try yfinance first (free, no API key, generally reliable).
@@ -26,8 +26,32 @@ Data source strategy ("beware it's hard to grab information"):
 Output CSV columns:
     date, dow, sp500, us10y_yield_pct, wti_crude, news
 
-The `news` column is left blank on purpose -- fill it in later (there's
-a helper `add_news()` function at the bottom for that).
+NEWS AUTOMATION: by default the script auto-writes the `news` column, but
+ONLY using headlines whose claimed direction (e.g. "oil surges") is
+CONFIRMED against that day's actual observed price/yield move -- if a
+headline says oil rose but WTI actually fell that day, it's dropped, not
+written. This avoids the earlier failure mode of templated guesses that
+could contradict your own data or be too vague to count as "real news"
+per the assignment rubric.
+
+If nothing can be confirmed that way on a given day, `news` is left
+blank and a review draft is printed instead -- because writing nothing
+is safer than writing an unverified guess. You can then:
+  - review with:  python market_indices.py --draft-news 2026-09-09
+  - commit with:  python market_indices.py --add-news 2026-09-09 "final text"
+
+Flags:
+  (no flag)        fetch prices, auto-write confirmed news if available
+  --no-auto-news   fetch prices, always leave news blank, print draft only
+  --fetch-news     print all raw headlines (unfiltered) for browsing
+  --draft-news [date]   reprint the draft for an existing row
+  --add-news <date> "text"   manually set/overwrite the news column
+
+IMPORTANT CAVEAT: "confirmed" here means direction-consistent with your
+data, not verified as the TRUE cause of the move -- multiple things can
+happen on the same day. Spot-check the auto-written notes periodically,
+especially early on, rather than trusting them blindly for a graded
+deliverable.
 """
 
 import csv
@@ -48,8 +72,7 @@ except ImportError:
     pass
 
 # Reads from the environment. Set this via `export NEWSAPI_KEY=...`,
-# a .env file (NEWSAPI_KEY=...), or your shell profile.
-# If your key is stored under a different name, change this line.
+# a .env file (NEWSAPI_KEY=...), a GitHub Actions secret, etc.
 NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY")
 
 # ---------------------------------------------------------------------------
@@ -58,31 +81,54 @@ NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY")
 
 OUTPUT_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "market_indices.csv")
 
-# Yahoo Finance tickers
 YF_TICKERS = {
     "dow": "^DJI",
     "sp500": "^GSPC",
-    "us10y_yield_pct": "^TNX",   # NOTE: Yahoo sometimes returns this *10 (e.g. 47.8 instead of 4.78)
+    "us10y_yield_pct": "^TNX",
     "wti_crude": "CL=F",
 }
 
-# Stooq fallback tickers (Stooq uses its own symbol scheme)
 STOOQ_TICKERS = {
     "dow": "^dji",
     "sp500": "^spx",
-    "us10y_yield_pct": "10usy.b",   # 10Y US Treasury yield, bond page
-    "wti_crude": "cl.f",            # continuous WTI crude futures
+    "us10y_yield_pct": "10usy.b",
+    "wti_crude": "cl.f",
 }
 
 CSV_FIELDS = ["date", "dow", "sp500", "us10y_yield_pct", "wti_crude", "news"]
 
+# Which metric each headline "topic" maps to, for matching headline
+# direction against actual observed price/yield direction.
+TOPIC_TO_METRIC = {
+    "oil": "wti_crude",
+    "crude": "wti_crude",
+    "wti": "wti_crude",
+    "brent": "wti_crude",
+    "yield": "us10y_yield_pct",
+    "yields": "us10y_yield_pct",
+    "treasury": "us10y_yield_pct",
+    "10-year": "us10y_yield_pct",
+    "10 year": "us10y_yield_pct",
+    "stock": "sp500",
+    "stocks": "sp500",
+    "equity": "sp500",
+    "equities": "sp500",
+    "s&p": "sp500",
+    "dow": "dow",
+}
+
+UP_WORDS = ["rise", "rises", "rising", "up", "higher", "climb", "climbs", "surge",
+            "surges", "jump", "jumps", "rally", "rallies", "gain", "gains", "soar", "soars"]
+DOWN_WORDS = ["fall", "falls", "falling", "down", "lower", "drop", "drops", "slide",
+              "slides", "sink", "sinks", "sell-off", "selloff", "retreat", "retreats",
+              "tumble", "tumbles", "slump", "slumps", "plunge", "plunges"]
+
 
 # ---------------------------------------------------------------------------
-# Fetchers
+# Price fetchers
 # ---------------------------------------------------------------------------
 
 def fetch_from_yfinance(ticker: str):
-    """Return the most recent close for a ticker via yfinance, or None."""
     try:
         hist = yf.Ticker(ticker).history(period="5d", interval="1d")
         if hist.empty:
@@ -94,7 +140,6 @@ def fetch_from_yfinance(ticker: str):
 
 
 def fetch_from_stooq(stooq_symbol: str):
-    """Return the most recent close for a symbol via Stooq's free CSV feed, or None."""
     try:
         url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
         df = pd.read_csv(url)
@@ -107,21 +152,14 @@ def fetch_from_stooq(stooq_symbol: str):
 
 
 def normalize_us10y(value: float) -> float:
-    """
-    ^TNX is quoted inconsistently across data providers: some give the
-    yield directly (e.g. 4.78 meaning 4.78%), others give it x10
-    (e.g. 47.8). If the raw value looks too large to be a plausible
-    10-year yield, scale it down.
-    """
     if value is None:
         return None
-    if value > 20:  # no realistic scenario where the 10Y yield is >20%
+    if value > 20:
         return round(value / 10, 3)
     return round(value, 3)
 
 
-def fetch_field(name: str) -> float:
-    """Try yfinance, then Stooq, for one field. Returns None if both fail."""
+def fetch_field(name: str):
     val = fetch_from_yfinance(YF_TICKERS[name])
     source = "yfinance"
     if val is None:
@@ -138,202 +176,31 @@ def fetch_field(name: str) -> float:
     return val
 
 
-# ---------------------------------------------------------------------------
-# Main run
-# ---------------------------------------------------------------------------
-
-def is_vague_news_headline(title: str) -> bool:
-    """Reject generic filler headlines that do not explain a concrete market move."""
-    text = title.lower()
-    vague_phrases = [
-        "increased investor demand",
-        "investor demand",
-        "market sentiment",
-        "market optimism",
-        "risk appetite",
-        "broad-based gains",
-        "broader gains",
-        "higher demand",
-        "up today owing to",
-        "gains as investors",
-        "added demand",
-        "investors are bullish",
-        "investors are optimistic",
-    ]
-    if any(phrase in text for phrase in vague_phrases):
-        return True
-    if "investor" in text and "demand" in text:
-        return True
-    return False
-
-
-def score_news_headline(title: str) -> int:
-    """Score candidate headlines by whether they are concrete, market-relevant news."""
-    text = title.lower()
-    score = 0
-    concrete_terms = [
-        "fed",
-        "inflation",
-        "cpi",
-        "treasury",
-        "yield",
-        "yields",
-        "oil",
-        "wti",
-        "brent",
-        "crude",
-        "wheat",
-        "corn",
-        "grain",
-        "jobs",
-        "employment",
-        "rate",
-        "rates",
-        "tariff",
-        "iran",
-        "war",
-        "geopolitical",
-        "stocks",
-        "equities",
-        "bank",
-        "central bank",
-        "dollar",
-        "shipping",
-        "shipping costs",
-        "hormuz",
-        "supply",
-        "demand",
-        "trade",
-        "middle east",
-        "energy",
-        "commodity",
-        "growth",
-        "recession",
-    ]
-    directional_terms = [
-        "rise",
-        "rises",
-        "up",
-        "higher",
-        "climb",
-        "surge",
-        "drop",
-        "fall",
-        "down",
-        "cut",
-        "hike",
-        "selloff",
-        "rally",
-        "jump",
-        "weaker",
-        "stronger",
-        "unexpected",
-        "hotter",
-        "sticky",
-        "slower",
-        "softer",
-        "retreat",
-        "weighed",
-        "boosted",
-        "hit",
-        "pressure",
-        "disrupt",
-        "disruption",
-        "concern",
-        "risk",
-    ]
-
-    if any(term in text for term in concrete_terms):
-        score += 2
-    if any(term in text for term in directional_terms):
-        score += 2
-    if any(term in text for term in ["treasury yields", "cpi", "fed", "inflation", "oil prices", "crude", "shipping", "middle east", "rates", "trade", "supply", "demand"]):
-        score += 2
-    if is_vague_news_headline(title):
-        score -= 5
-    return score
-
-
-def rewrite_headline_as_summary(title: str) -> str:
-    """Turn a relevant headline into a short causal note tied to a tracked index."""
-    text = title.strip().rstrip(". ")
-    lower = text.lower()
-
-    if "treasury yield" in lower or "treasury yields" in lower or "10y" in lower:
-        if any(word in lower for word in ["rise", "higher", "climb", "surge", "jump"]):
-            return "Treasury yields rose after hotter-than-expected inflation data pushed rate expectations higher, which likely pressured the S&P 500 and Dow through a higher discount rate."
-        return "Treasury yields moved after fresh inflation or policy signals, suggesting higher financing costs that likely weighed on equities and the broader market."
-
-    if "inflation" in lower or "cpi" in lower:
-        return "Stronger inflation data raised rate fears, which likely pushed yields higher and pressured the S&P 500 and Dow as investors priced in a tighter policy path."
-
-    if "fed" in lower or "rate" in lower or "rates" in lower:
-        return "Fed policy signals changed rate expectations, which likely pushed Treasury yields and weighed on the S&P 500 and Dow as growth-sensitive assets were repriced."
-
-    if "brent" in lower or "oil" in lower or "wti" in lower or "crude" in lower:
-        if any(word in lower for word in ["rise", "higher", "jump", "surge", "climb", "above $100", "moves above"]):
-            return "Brent crude and oil prices rose on tighter supply and shipping risks, which likely lifted inflation concerns and pressured the S&P 500 and Dow through higher energy costs."
-        return "Oil prices eased on softer supply or demand signals, which likely supported risk sentiment and helped the S&P 500 and Dow."
-
-    if "hormuz" in lower or "war" in lower or "iran" in lower or "geopolitical" in lower or "middle east" in lower:
-        return "Shipping and energy disruptions tied to the Middle East likely raised oil and freight costs, which likely pressured the S&P 500 and Dow by increasing inflation risk and reducing growth expectations."
-
-    if "wheat" in lower or "corn" in lower or "grain" in lower:
-        return "Higher wheat and grain prices from shipping and supply disruption likely raised inflation concerns, which likely kept pressure on the S&P 500 and Dow through weaker growth expectations."
-
-    if "shipping" in lower or "trade" in lower or "supply" in lower or "demand" in lower or "commodity" in lower:
-        return "Supply disruptions in key shipping and commodity routes likely raised inflation and uncertainty, which in turn pressured the S&P 500 and Dow through weaker growth expectations."
-
-    if "stock" in lower or "equity" in lower or "equities" in lower:
-        return "The latest macro and policy headlines likely drove the S&P 500 and Dow as investors repriced growth and rate expectations."
-
-    if "drop" in lower or "fall" in lower or "down" in lower or "weaker" in lower:
-        return "The negative data and policy tone likely weighed on equities, with the S&P 500 and Dow falling as investors rotated away from growth-sensitive assets."
-
-    return "The latest macro news likely affected the tracked indices by shifting rate expectations and risk sentiment, which in turn pressured or supported the S&P 500 and Dow."
-
-
-def generate_daily_news_summary(headlines: list | None = None) -> str:
-    """
-    Pick the most concrete market-moving headline and rewrite it as a short
-    narration suitable for the final `news` column in the daily CSV row.
-    """
-    if headlines is None:
-        headlines = fetch_news_headlines()
-
-    if not headlines:
-        return "No clearly relevant market-moving news available."
-
-    candidates = []
-    for item in headlines:
-        title = (item or {}).get("title", "").strip()
-        if not title:
-            continue
-        if is_vague_news_headline(title):
-            continue
-        score = score_news_headline(title)
-        if score >= 1:
-            candidates.append((score, title))
-
-    if not candidates:
-        for item in headlines:
-            title = (item or {}).get("title", "").strip()
-            if title and not is_vague_news_headline(title):
-                return rewrite_headline_as_summary(title)
-        return "The latest market and sector headlines likely influenced risk sentiment and the tracked indices through changes in growth expectations and policy pricing."
-
-    _, best_title = max(candidates, key=lambda pair: pair[0])
-    return rewrite_headline_as_summary(best_title)
-
-
-def fetch_all():
+def fetch_all(auto_news: bool = True):
     print(f"Fetching market indices @ {datetime.now().isoformat(timespec='seconds')}")
     row = {"date": datetime.now().strftime("%Y-%m-%d")}
     for field in ["dow", "sp500", "us10y_yield_pct", "wti_crude"]:
         row[field] = fetch_field(field)
-    row["news"] = generate_daily_news_summary(fetch_news_headlines())
+    row["news"] = ""
+
+    if auto_news:
+        prev_row = get_previous_row(row["date"])
+        headlines = fetch_news_headlines()
+        confirmed, _ = get_confirmed_matches(row, prev_row, headlines)
+        auto_text = compose_auto_news(confirmed)
+        if auto_text:
+            row["news"] = auto_text
+            print(f"  [auto-news] wrote confirmed note: {auto_text}")
+        else:
+            print("  [auto-news] no headline could be confirmed against today's actual "
+                  "price moves -- leaving news blank. Run --draft-news to review candidates "
+                  "and fill it in manually with --add-news.")
     return row
 
+
+# ---------------------------------------------------------------------------
+# CSV I/O
+# ---------------------------------------------------------------------------
 
 def append_row(row: dict, path: str = OUTPUT_CSV):
     file_exists = os.path.isfile(path)
@@ -360,20 +227,55 @@ def append_row(row: dict, path: str = OUTPUT_CSV):
     print(f"Appended row for {row['date']} to {path}")
 
 
-def fetch_news_headlines(max_headlines: int = 8, retries: int = 2):
+def get_row_for_date(date_str: str, path: str = OUTPUT_CSV):
+    if not os.path.isfile(path):
+        return None
+    df = pd.read_csv(path, dtype=str)
+    matches = df[df["date"] == date_str]
+    if matches.empty:
+        return None
+    return matches.iloc[-1].to_dict()
+
+
+def get_previous_row(date_str: str, path: str = OUTPUT_CSV):
+    """Most recent row strictly before date_str, or None."""
+    if not os.path.isfile(path):
+        return None
+    df = pd.read_csv(path, dtype=str)
+    df = df[df["date"] < date_str].sort_values("date")
+    if df.empty:
+        return None
+    return df.iloc[-1].to_dict()
+
+
+def add_news(date_str: str, news_text: str, path: str = OUTPUT_CSV):
     """
-    Pull recent market-moving headlines as raw material for writing a proper
-    Daily Notes entry (see add_news / --add-news). This does NOT try to
-    auto-write the causal note itself -- that needs a human (or Claude,
-    on request) to pick the right headline(s), tie them to a specific
-    asset, and state the direction/mechanism, per the "real news" rubric.
+    Commit the final news note for a given date, e.g.:
+        python market_indices.py --add-news 2026-09-09 "Fed signaled ..."
+    """
+    if not os.path.isfile(path):
+        print(f"{path} does not exist yet.")
+        return
+    df = pd.read_csv(path, dtype=str)
+    mask = df["date"] == date_str
+    if not mask.any():
+        print(f"No row found for {date_str} in {path}.")
+        return
+    df.loc[mask, "news"] = news_text
+    df.to_csv(path, index=False)
+    print(f"Updated news for {date_str}.")
 
-    Tries NewsAPI first (needs NEWSAPI_KEY set). Retries on transient
-    errors/rate limits. Falls back to Yahoo Finance's free RSS feed if
-    NewsAPI is unavailable, unauthorized, or rate-limited, so one flaky
-    source doesn't block the whole run.
 
-    Returns a list of dicts: {"title": ..., "source": ..., "url": ...}
+# ---------------------------------------------------------------------------
+# News fetching
+# ---------------------------------------------------------------------------
+
+def fetch_news_headlines(max_headlines: int = 15, retries: int = 2):
+    """
+    Pull recent market-moving headlines. Tries NewsAPI first (needs
+    NEWSAPI_KEY), retries on transient errors/rate limits, falls back to
+    Yahoo Finance's free RSS feed if NewsAPI is unavailable.
+    Returns a list of dicts: {"title", "source", "url"}.
     """
     headlines = []
 
@@ -427,11 +329,27 @@ def fetch_news_headlines(max_headlines: int = 8, retries: int = 2):
     return headlines
 
 
+VAGUE_PHRASES = [
+    "increased investor demand", "investor demand", "market sentiment",
+    "market optimism", "risk appetite", "broad-based gains", "broader gains",
+    "higher demand", "up today owing to", "gains as investors", "added demand",
+    "investors are bullish", "investors are optimistic",
+]
+
+
+def is_vague_news_headline(title: str) -> bool:
+    text = title.lower()
+    if any(phrase in text for phrase in VAGUE_PHRASES):
+        return True
+    if "investor" in text and "demand" in text:
+        return True
+    return False
+
+
 def print_news_candidates():
     """
-    CLI helper: print today's raw headline candidates so you can pick
-    which ones are real, price-relevant news, then write a causal note
-    with --add-news.
+    CLI helper: print today's raw headline candidates, unfiltered, so you
+    can eyeball everything available.
         python market_indices.py --fetch-news
     """
     headlines = fetch_news_headlines()
@@ -440,46 +358,220 @@ def print_news_candidates():
         return
     print(f"\nFound {len(headlines)} candidate headlines:\n")
     for i, h in enumerate(headlines, 1):
-        print(f"{i}. [{h['source']}] {h['title']}")
+        flag = "  [VAGUE -- avoid]" if is_vague_news_headline(h["title"]) else ""
+        print(f"{i}. [{h['source']}] {h['title']}{flag}")
         print(f"   {h['url']}\n")
-    print("Review these, pick the ones that actually explain a price move,")
-    print("and write the causal note yourself (or ask Claude to draft it), e.g.:")
-    print('  python market_indices.py --add-news 2026-09-09 "..."')
 
 
-def add_news(date_str: str, news_text: str, path: str = OUTPUT_CSV):
+# ---------------------------------------------------------------------------
+# Grounded draft summary: ties real headlines to real observed price moves
+# ---------------------------------------------------------------------------
+
+def compute_deltas(row: dict, prev_row: dict):
+    """Return {metric: (delta, pct_or_bps, direction)} for the 4 tracked fields."""
+    deltas = {}
+    for metric in ["dow", "sp500", "us10y_yield_pct", "wti_crude"]:
+        try:
+            cur = float(row.get(metric))
+            prev = float(prev_row.get(metric)) if prev_row else None
+        except (TypeError, ValueError):
+            cur, prev = None, None
+        if cur is None or prev is None:
+            deltas[metric] = None
+            continue
+        diff = cur - prev
+        direction = "up" if diff > 0 else ("down" if diff < 0 else "flat")
+        if metric == "us10y_yield_pct":
+            change_desc = f"{diff * 100:+.0f}bp to {cur:.2f}%"
+        else:
+            pct = (diff / prev) * 100 if prev else 0
+            change_desc = f"{pct:+.2f}% to {cur:,.2f}"
+        deltas[metric] = (diff, change_desc, direction)
+    return deltas
+
+
+def headline_topics_and_direction(title: str):
+    """Return list of (metric, claimed_direction) implied by the headline text."""
+    text = title.lower()
+    matches = []
+    for topic, metric in TOPIC_TO_METRIC.items():
+        if topic in text:
+            claimed = None
+            if any(w in text for w in UP_WORDS):
+                claimed = "up"
+            elif any(w in text for w in DOWN_WORDS):
+                claimed = "down"
+            matches.append((metric, claimed))
+    return matches
+
+
+def get_confirmed_matches(row: dict, prev_row: dict, headlines: list):
     """
-    Helper to backfill the `news` column for a given date after the fact,
-    e.g.:
-        python market_indices.py --add-news 2026-09-09 "Fed signaled ..."
+    Return (confirmed, unverified) lists of (headline, metric, delta_tuple).
+    confirmed = headline's claimed direction matches the ACTUAL observed
+    direction for the metric it references that day (the only tier safe
+    enough to auto-write into the CSV).
+    unverified = topically relevant but headline made no directional claim
+    to check, or no prior row exists to compute a delta against.
+    Contradicting headlines are dropped entirely, not returned.
     """
-    if not os.path.isfile(path):
-        print(f"{path} does not exist yet.")
-        return
-    df = pd.read_csv(path, dtype=str)
-    mask = df["date"] == date_str
-    if not mask.any():
-        print(f"No row found for {date_str} in {path}.")
-        return
-    df.loc[mask, "news"] = news_text
-    df.to_csv(path, index=False)
-    print(f"Updated news for {date_str}.")
+    if not headlines:
+        return [], []
 
+    deltas = compute_deltas(row, prev_row) if prev_row else {m: None for m in CSV_FIELDS[1:5]}
+
+    confirmed = []
+    unverified = []
+    seen = set()
+
+    for h in headlines:
+        title = h.get("title", "")
+        if not title or is_vague_news_headline(title) or title in seen:
+            continue
+        topics = headline_topics_and_direction(title)
+        if not topics:
+            continue
+        for metric, claimed in topics:
+            d = deltas.get(metric)
+            if d is None:
+                continue
+            actual_dir = d[2]
+            if claimed is None:
+                unverified.append((h, metric, d))
+                seen.add(title)
+            elif claimed == actual_dir:
+                confirmed.append((h, metric, d))
+                seen.add(title)
+            # contradicting claims are silently dropped
+
+    return confirmed, unverified
+
+
+def compose_auto_news(confirmed: list) -> str:
+    """
+    Build a citable, grounded news sentence from CONFIRMED matches only
+    (headline direction verified against actual same-day data movement).
+    Returns "" if there's nothing safe to auto-write.
+    """
+    if not confirmed:
+        return ""
+    parts = []
+    seen_titles = set()
+    for h, metric, d in confirmed[:3]:   # cap at 3 to keep it readable
+        if h["title"] in seen_titles:
+            continue
+        seen_titles.add(h["title"])
+        parts.append(f'"{h["title"]}" ({h["source"]}) -- {metric} moved {d[1]}')
+    return "Per " + "; ".join(parts) + "."
+
+
+def build_draft_summary(row: dict, prev_row: dict, headlines: list):
+    """
+    Build a draft news note for display purposes (used by --draft-news and
+    --fetch-news review, and as the fallback message when auto-write finds
+    nothing confirmed).
+    """
+    confirmed, unverified = get_confirmed_matches(row, prev_row, headlines)
+
+    lines = []
+    if not prev_row:
+        lines.append("[DRAFT] No prior-day row found for comparison -- deltas unavailable "
+                      "(this may be the first logged row). Headlines below are unverified against direction.")
+
+    seen_titles = set()
+    for h, metric, d in confirmed:
+        if h["title"] in seen_titles:
+            continue
+        seen_titles.add(h["title"])
+        lines.append(
+            f'- CONFIRMED match: "{h["title"]}" ({h["source"]}) -- '
+            f'{metric} moved {d[1]}, consistent with this headline. {h["url"]}'
+        )
+
+    if not confirmed:
+        for h, metric, d in unverified[:5]:
+            if h["title"] in seen_titles:
+                continue
+            seen_titles.add(h["title"])
+            lines.append(
+                f'- Possibly relevant (direction not stated in headline, verify manually): '
+                f'"{h["title"]}" ({h["source"]}) -- {metric} moved {d[1]}. {h["url"]}'
+            )
+
+    if not lines or (len(lines) == 1 and not prev_row):
+        lines.append("- No headline could be matched to a tracked metric's actual direction today. "
+                      "Run --fetch-news to see all raw headlines and write the note manually.")
+
+    header = "[DRAFT news summary -- review before committing with --add-news]"
+    return header + "\n" + "\n".join(lines)
+
+
+def print_draft_news(date_str: str = None):
+    """
+    python market_indices.py --draft-news [YYYY-MM-DD]
+    Regenerates the draft for an existing row without re-fetching prices.
+    Defaults to today.
+    """
+    date_str = date_str or datetime.now().strftime("%Y-%m-%d")
+    row = get_row_for_date(date_str)
+    if row is None:
+        print(f"No row found for {date_str} in {OUTPUT_CSV}. Run the script first to log prices.")
+        return
+    prev_row = get_previous_row(date_str)
+    headlines = fetch_news_headlines()
+    draft = build_draft_summary(row, prev_row, headlines)
+    print(f"\n{draft}\n")
+    print(f'To commit: python market_indices.py --add-news {date_str} "your final text"')
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     if len(sys.argv) >= 4 and sys.argv[1] == "--add-news":
         add_news(sys.argv[2], " ".join(sys.argv[3:]))
     elif len(sys.argv) >= 2 and sys.argv[1] == "--fetch-news":
         print_news_candidates()
-    else:
-        row = fetch_all()
+    elif len(sys.argv) >= 2 and sys.argv[1] == "--draft-news":
+        date_arg = sys.argv[2] if len(sys.argv) >= 3 else None
+        print_draft_news(date_arg)
+    elif len(sys.argv) >= 2 and sys.argv[1] == "--no-auto-news":
+        row = fetch_all(auto_news=False)
         append_row(row)
+        prev_row = get_previous_row(row["date"])
+        headlines = fetch_news_headlines()
+        draft = build_draft_summary(row, prev_row, headlines)
+        print(f"\n{draft}\n")
+        print(f'To commit: python market_indices.py --add-news {row["date"]} "your final text"')
+    else:
+        # Default: fetch prices AND auto-write a confirmed news note if one
+        # is available. If nothing could be confirmed against today's real
+        # data, news stays blank and a review draft is printed instead.
+        row = fetch_all(auto_news=True)
+        append_row(row)
+        if not row["news"]:
+            prev_row = get_previous_row(row["date"])
+            headlines = fetch_news_headlines()
+            draft = build_draft_summary(row, prev_row, headlines)
+            print(f"\n{draft}\n")
+            print(f'To commit: python market_indices.py --add-news {row["date"]} "your final text"')
 
 # ---------------------------------------------------------------------------
 # Suggested cron entry (runs weekdays at 5:15pm ET -- adjust TZ as needed):
 #   15 17 * * 1-5 /usr/bin/python3 /path/to/market_indices.py >> /path/to/market_indices.log 2>&1
 #
-# On the Duke VM, check `timedatectl` for the system timezone before setting
-# the cron time -- if the VM is in UTC, 5:15pm ET is 21:15 UTC (EST) or
-# 22:15 UTC (EDT), so adjust for daylight saving.
+# Since you're running this locally (VS Code / macOS), check your machine's
+# timezone first with: date
+# If it already shows Eastern Time, the "17" (5pm) in the cron line above
+# is correct as-is. If your Mac is set to a different timezone, adjust the
+# hour accordingly, or just set the schedule using local wall-clock time
+# (cron on macOS uses whatever timezone the machine is set to, not UTC).
+#
+# Note: cron only fires while your Mac is awake and logged in. If you want
+# this to run reliably even when the laptop is closed/asleep, that's the
+# main advantage of the GitHub Actions workflow you already set up (it
+# runs on GitHub's servers regardless of your machine's state) -- you can
+# use cron locally for testing and GitHub Actions for the reliable
+# scheduled version.
 # ---------------------------------------------------------------------------

@@ -1,0 +1,44 @@
+name: Daily Market Index Log
+
+on:
+  schedule:
+    # 21:15 UTC = 5:15pm ET during EDT (summer/early fall).
+    # GitHub Actions cron is UTC-only and does NOT adjust for daylight
+    # saving. Once EST kicks in (~early Nov), this fires at 4:15pm ET
+    # instead of 5:15pm. Switch to '15 22 * * 1-5' after the DST changeover
+    # if you want to keep it pinned to 5:15pm ET year-round.
+    - cron: '15 21 * * 1-5'
+  workflow_dispatch: {}   # manual trigger from the Actions tab, for testing
+
+permissions:
+  contents: write   # required so the workflow can commit the updated CSV
+
+jobs:
+  update-market-log:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run market log script
+        env:
+          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
+        run: python market_indices.py
+
+      - name: Commit updated CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add market_indices.csv
+          git diff --staged --quiet || git commit -m "Update market indices $(date -u +%Y-%m-%d)"
+          git push
