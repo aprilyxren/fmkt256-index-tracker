@@ -1,3 +1,78 @@
+#!/usr/bin/env bash
+set -e
+
+# Run this from INSIDE your already-cloned repo folder
+# (the one with LICENSE and README.md already in it)
+
+mkdir -p .github/workflows
+
+echo "Writing .gitignore ..."
+cat > .gitignore << 'EOF'
+__pycache__/
+*.pyc
+venv/
+.env
+EOF
+
+echo "Writing requirements.txt ..."
+cat > requirements.txt << 'EOF'
+pandas
+yfinance
+requests
+feedparser
+python-dotenv
+EOF
+
+echo "Writing .github/workflows/market_log.yml ..."
+cat > .github/workflows/market_log.yml << 'EOF'
+name: Daily Market Index Log
+
+on:
+  schedule:
+    # 21:15 UTC = 5:15pm ET during EDT (summer/early fall).
+    # GitHub Actions cron is UTC-only and does NOT adjust for daylight
+    # saving. Once EST kicks in (~early Nov), this fires at 4:15pm ET
+    # instead of 5:15pm. Switch to '15 22 * * 1-5' after the DST changeover
+    # if you want to keep it pinned to 5:15pm ET year-round.
+    - cron: '15 21 * * 1-5'
+  workflow_dispatch: {}   # manual trigger from the Actions tab, for testing
+
+permissions:
+  contents: write   # required so the workflow can commit the updated CSV
+
+jobs:
+  update-market-log:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run market log script
+        env:
+          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
+        run: python market_indices.py
+
+      - name: Commit updated CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add market_indices.csv
+          git diff --staged --quiet || git commit -m "Update market indices $(date -u +%Y-%m-%d)"
+          git push
+EOF
+
+echo "Writing market_indices.py ..."
+cat > market_indices.py << 'PYEOF'
 #!/usr/bin/env python3
 """
 market_indices.py
@@ -575,3 +650,32 @@ if __name__ == "__main__":
 # use cron locally for testing and GitHub Actions for the reliable
 # scheduled version.
 # ---------------------------------------------------------------------------
+PYEOF
+
+echo ""
+echo "Files created. Verifying ..."
+ls -la
+find .github -type f
+
+echo ""
+echo "Setting up virtual environment ..."
+python3 -m venv venv
+source venv/bin/activate
+pip install -q -r requirements.txt
+
+echo ""
+echo "Committing and pushing ..."
+git add -A
+git status
+git commit -m "Initial commit: market index tracker + workflow"
+git push
+
+echo ""
+echo "Final check -- files tracked by git:"
+git ls-files
+
+echo ""
+echo "Done. Next steps:"
+echo "1. Add NEWSAPI_KEY as a repo secret: Settings -> Secrets and variables -> Actions"
+echo "2. Go to the Actions tab on GitHub and manually Run workflow to test it"
+echo "3. To test locally right now: python3 market_indices.py  (venv is already active)"
