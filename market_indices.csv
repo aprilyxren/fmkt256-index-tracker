@@ -8,3 +8,4 @@ date,dow,sp500,us10y_yield_pct,wti_crude,news
 2026-09-22,52048.83,7764.7,4.963,92.26,
 2026-09-23,51511.59,7706.03,5.114,92.1,"Per ""Dangote, marketers cut petrol prices as crude falls"" (The Punch) -- wti_crude moved -0.17% to 92.10."
 2026-09-24,51349.98,7704.13,5.162,93.98,"Per ""Petrol under-dispensing: NMDPRA cracks down on filling stations"" (The Punch) -- dow moved -0.31% to 51,349.98; ""US sanctions shut down 80-90% of Iran’s external flights"" (Crypto Briefing) -- dow moved -0.31% to 51,349.98."
+2026-09-25,51828.62,7743.41,5.184,92.44,"Per ""Stock market today: Dow, S&P 500, Nasdaq trims losses as hopes of Hormuz deal offset rising bond yields - Yahoo Finance"" (Slashdot.org) -- us10y_yield_pct moved +2bp to 5.18%."
