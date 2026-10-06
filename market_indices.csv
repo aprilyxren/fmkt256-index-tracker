@@ -14,3 +14,4 @@ date,dow,sp500,us10y_yield_pct,wti_crude,news
 2026-10-01,50906.05,7651.54,5.293,90.42,"Per ""Bond supply may outweigh demand, push yields higher"" (The Times of India) -- us10y_yield_pct moved +4bp to 5.29%; ""Oil's New Normal Is Higher Prices"" (OilPrice.com) -- wti_crude moved +1.31% to 90.42."
 2026-10-02,50926.56,7666.45,5.237,93.05,"Per ""US stocks rise after stable inflation reading"" (The Punch) -- sp500 moved +0.19% to 7,666.45."
 2026-10-03,51176.96,7722.72,5.277,91.26,"Per ""3 Bank Stocks That Could Benefit If Rates Stay Higher for Longer"" (Biztoc.com) -- sp500 moved +0.73% to 7,722.72."
+2026-10-06,51267.9,7773.95,5.311,89.47,"Per ""Sensex Today | Nifty 50 | Stock Market Live Updates: GIFT Nifty signals a positive start; Asian shares trade higher"" (Economictimes.com) -- sp500 moved +0.66% to 7,773.95; ""Stock futures are flat as investors grapple with higher yields, await Fed minutes: Live updates"" (Biztoc.com) -- us10y_yield_pct moved +3bp to 5.31%."
