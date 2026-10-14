@@ -20,3 +20,4 @@ date,dow,sp500,us10y_yield_pct,wti_crude,news
 2026-10-09,51231.64,7765.36,5.231,91.13,"Per ""Global Market Today: Asian stocks drop on inflation concerns, oil gains"" (The Times of India) -- wti_crude moved +2.27% to 91.13; ""US stocks slide as oil prices fluctuate over renewed Iran war fears"" (Al Jazeera English) -- sp500 moved -0.47% to 7,765.36."
 2026-10-10,51654.95,7811.54,5.244,91.66,"Per ""Stock futures are little changed after OpenAI's revenue report prompts tech sector turmoil: Live updates - CNBC"" (Slashdot.org) -- wti_crude moved +0.58% to 91.66."
 2026-10-13,51850.55,7807.24,5.24,92.58,
+2026-10-14,51670.1,7805.45,5.217,94.74,"Per ""US Stock Market today: Reasons behind S&P 500, Nasdaq fall in Wall Street, top, worst performing sectors, stocks"" (The Times of India) -- sp500 moved -0.02% to 7,805.45."
