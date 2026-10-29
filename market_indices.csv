@@ -28,3 +28,4 @@ date,dow,sp500,us10y_yield_pct,wti_crude,news
 2026-10-23,52215.16,7623.68,4.988,103.44,
 2026-10-27,52361.58,7676.77,4.986,101.17,"Per ""3 REIT Stocks for Higher Rates and Steady Income"" (Biztoc.com) -- sp500 moved +0.70% to 7,676.77."
 2026-10-28,52377.57,7722.6,4.993,100.44,
+2026-10-29,52475.1,7743.98,5.045,102.04,"Per ""Global Market Today: Asian stocks advance on resurgent AI optimism"" (The Times of India) -- sp500 moved +0.28% to 7,743.98; ""An unreliable US President cosying up to Russia. War in the Middle East. And a global oil crunch... 70 years after the Suez Crisis, history is repeating itself in truly brutal ways"" (Dailymail.com) -- wti_crude moved +1.59% to 102.04."
