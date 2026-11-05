@@ -33,3 +33,4 @@ date,dow,sp500,us10y_yield_pct,wti_crude,news
 2026-10-31,51770.31,7580.07,4.929,102.95,"Per ""G-Sec 10-year yields come down 5 bps to 7.39% on Fed signals"" (The Times of India) -- us10y_yield_pct moved -6bp to 4.93%."
 2026-11-03,51983.98,7541.4,4.894,96.89,
 2026-11-04,51786.72,7568.92,4.952,96.6,"Per ""Dollar under pressure as oil prices slump, Australia rate decision awaited"" (CNA) -- wti_crude moved -0.30% to 96.60; ""China rolls out support measures to aid struggling stocks"" (CNA) -- sp500 moved +0.36% to 7,568.92."
+2026-11-05,53356.12,7688.62,4.894,87.62,"Per ""Why DuPont Stock Trounced the Market on Tuesday"" (Biztoc.com) -- sp500 moved +1.58% to 7,688.62."
